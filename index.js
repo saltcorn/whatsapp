@@ -1,9 +1,14 @@
+const crypto = require("crypto");
 const Workflow = require("@saltcorn/data/models/workflow");
 const Form = require("@saltcorn/data/models/form");
+const Table = require("@saltcorn/data/models/table");
+const { getState } = require("@saltcorn/data/db/state");
 const { a, div, p, ol, li, strong, code } = require("@saltcorn/markup/tags");
 
 const actions = require("./lib/actions");
-const { DEFAULT_API_VERSION } = require("./lib/config");
+const { routes } = require("./lib/routes");
+const { MESSAGE_EVENT, STATUS_EVENT } = require("./lib/webhook");
+const { DEFAULT_API_VERSION, WEBHOOK_PATH, callbackProblem } = require("./lib/config");
 
 const DEVELOPERS_URL = "https://developers.facebook.com/";
 const BUSINESS_SETTINGS_URL = "https://business.facebook.com/latest/settings";
@@ -73,6 +78,67 @@ const setupBlurb = () => [
   ),
 ];
 
+/** The URL to give Meta, or a placeholder showing its shape. */
+const callbackUrl = () => {
+  let base = "";
+  try {
+    base = (getState().getConfig("base_url", "") || "").replace(/\/+$/, "");
+  } catch (e) {}
+  return {
+    url: `${base || "https://your-saltcorn-host"}${WEBHOOK_PATH}`,
+    problem: callbackProblem(base),
+  };
+};
+
+const webhookBlurb = () => {
+  const { url, problem } = callbackUrl();
+  return [
+    div(
+      { class: "mb-3" },
+      p(
+        "Optional. The webhook lets Saltcorn receive incoming messages and " +
+          "delivery updates, as the ",
+        code(MESSAGE_EVENT),
+        " and ",
+        code(STATUS_EVENT),
+        " trigger events.",
+      ),
+      ol(
+        li(
+          "In the Meta app, open ",
+          strong("App settings → Basic"),
+          ", click ",
+          strong("Show"),
+          " next to ",
+          strong("App secret"),
+          ", and paste it below.",
+        ),
+        li("Save this page, so Saltcorn knows the verify token before Meta checks it."),
+        li(
+          "On WhatsApp's ",
+          strong("Step 2. Production setup"),
+          " page, open ",
+          strong("Configure Webhooks"),
+          ". Enter the callback URL and the verify token below, click ",
+          strong("Verify and save"),
+          ", then subscribe to the ",
+          strong("messages"),
+          " field.",
+        ),
+      ),
+      p(
+        { class: "text-muted" },
+        "Until the app is published, Meta only sends the test webhooks you " +
+          "trigger from the dashboard. Real messages and status updates need " +
+          "a published app.",
+      ),
+      p("Callback URL:"),
+      p(code({ class: "user-select-all" }, url)),
+      problem ? div({ class: "alert alert-warning" }, problem) : "",
+    ),
+  ];
+};
+
 const configuration_workflow = () =>
   new Workflow({
     steps: [
@@ -121,6 +187,93 @@ const configuration_workflow = () =>
             ],
           }),
       },
+      {
+        name: "Webhook",
+        form: async () => {
+          const tables = await Table.find({}, { orderBy: "name" });
+          return new Form({
+            blurb: webhookBlurb(),
+            fields: [
+              {
+                name: "verify_token",
+                label: "Verify token",
+                sublabel: "Any secret string. Enter the same one in Meta.",
+                type: "String",
+                default: crypto.randomBytes(16).toString("hex"),
+              },
+              {
+                name: "app_secret",
+                label: "App secret",
+                sublabel:
+                  "Checks that each webhook really comes from Meta. Without " +
+                  "it, every webhook is refused.",
+                type: "String",
+                input_type: "password",
+              },
+              {
+                name: "status_table",
+                label: "Track delivery status in",
+                sublabel:
+                  "Optional. A table where you save message IDs. Its rows " +
+                  "are updated as messages are delivered, read or fail. The " +
+                  "next step picks the fields.",
+                type: "String",
+                attributes: { options: ["", ...tables.map((t) => t.name)] },
+              },
+            ],
+          });
+        },
+      },
+      {
+        name: "Delivery status",
+        onlyWhen: (context) => !!context.status_table,
+        form: async (context) => {
+          const table =
+            Table.findOne({ name: context.status_table }) ||
+            (await Table.find({ name: context.status_table }))[0];
+          const strings = ((table && table.fields) || [])
+            .filter((f) => f.type && f.type.name === "String")
+            .map((f) => f.name);
+          return new Form({
+            blurb: [
+              p(
+                "Statuses only move forward: a late ",
+                code("delivered"),
+                " never replaces ",
+                code("read"),
+                ", and ",
+                code("failed"),
+                " is final.",
+              ),
+            ],
+            fields: [
+              {
+                name: "status_id_field",
+                label: "Message ID field",
+                sublabel: "Where the send actions save the message ID",
+                type: "String",
+                required: true,
+                attributes: { options: strings },
+              },
+              {
+                name: "status_field",
+                label: "Status field",
+                sublabel: "Set to sent, delivered, read or failed",
+                type: "String",
+                required: true,
+                attributes: { options: strings },
+              },
+              {
+                name: "status_error_field",
+                label: "Error field",
+                sublabel: "Optional. Why a message failed, e.g. its error code and title",
+                type: "String",
+                attributes: { options: ["", ...strings] },
+              },
+            ],
+          });
+        },
+      },
     ],
   });
 
@@ -131,4 +284,9 @@ module.exports = {
   plugin_name: "whatsapp",
   configuration_workflow,
   actions: () => exportedActions,
+  routes: () => routes,
+  eventTypes: () => ({
+    [MESSAGE_EVENT]: { hasChannel: true },
+    [STATUS_EVENT]: { hasChannel: true },
+  }),
 };

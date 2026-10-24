@@ -56,3 +56,15 @@ test("error_data.details is included, since message is often generic", () => {
   assert.match(msg, /does not exist in en/);
   assert.match(msg, /en_US is not en/);
 });
+
+test("webhook base URLs Meta cannot call are explained", () => {
+  const { callbackProblem } = require("../lib/config");
+  assert.equal(callbackProblem("https://example.com"), null);
+  assert.equal(callbackProblem("https://abc.ngrok-free.app/"), null);
+  assert.match(callbackProblem(""), /placeholder/);
+  assert.match(callbackProblem("http://localhost:3000"), /cannot reach localhost/);
+  assert.match(callbackProblem("https://127.0.0.1"), /cannot reach 127\.0\.0\.1/);
+  assert.match(callbackProblem("http://192.168.1.20:3000"), /cannot reach/);
+  assert.match(callbackProblem("http://example.com"), /only calls HTTPS/);
+  assert.match(callbackProblem("not a url"), /not a valid URL/);
+});

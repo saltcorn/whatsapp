@@ -16,6 +16,7 @@ const reply = (status, body, headers = {}) => ({
   status,
   headers: { get: (k) => headers[k.toLowerCase()] ?? null },
   text: async () => (body === undefined ? "" : JSON.stringify(body)),
+  arrayBuffer: async () => new TextEncoder().encode(body === undefined ? "" : String(body)).buffer,
 });
 
 /** A Graph error response, as Meta shapes it. */
@@ -33,6 +34,10 @@ const fakeGraph = (state = {}) => {
 
   const impl = async (url, init = {}) => {
     const u = new URL(url);
+    if (u.hostname === "lookaside.example") {
+      calls.push({ path: "download", url, headers: init.headers });
+      return reply(200, "MEDIA BYTES");
+    }
     const [, version, phoneId, ...rest] = u.pathname.split("/");
     const path = `/${rest.join("/")}`;
     let body = init.body;
@@ -53,6 +58,12 @@ const fakeGraph = (state = {}) => {
       });
     }
     if (path === "/media") return reply(200, { id: "media-1" });
+    if (path === "/" && init.method === "GET")
+      return reply(200, {
+        id: phoneId,
+        url: `https://lookaside.example/whatsapp_business/attachments/?mid=${phoneId}`,
+        mime_type: state.mime_type || "image/jpeg",
+      });
     throw new Error(`fake-graph: no route for ${init.method} ${path}`);
   };
   impl.calls = calls;

@@ -24,7 +24,7 @@ test("send_text sends the evaluated text to the normalised number", async () => 
       type: "text",
       text: { body: "Order A1 shipped", preview_url: false },
     });
-    assert.equal(res.notify, "WhatsApp message sent to +14155550100");
+    assert.equal(res.notify, "Message to +14155550100 accepted by WhatsApp");
   });
 });
 
@@ -205,4 +205,64 @@ test("MIME types map to the message types WhatsApp accepts", () => {
   assert.equal(typeForMime("video/mp4"), "video");
   assert.equal(typeForMime("audio/mpeg"), "audio");
   assert.equal(typeForMime("application/pdf"), "document");
+});
+
+test("download_media saves the media as a file and stores its path", async () => {
+  const File = require("@saltcorn/data/models/file");
+  const real = File.from_contents;
+  const created = [];
+  File.from_contents = async (name, mimetype, content, user_id, min_role_read) => {
+    created.push({ name, mimetype, content: content.toString(), user_id, min_role_read });
+    return { path_to_serve: `/files/${name}` };
+  };
+  try {
+    await withGraph({ mime_type: "application/pdf" }, async ({ fake }) => {
+      const updates = [];
+      const table = {
+        name: "inbox",
+        fields: [{ name: "media_id" }, { name: "attachment", type: "File" }],
+        updateRow: async (patch, id) => updates.push({ patch, id }),
+      };
+      const res = await run(
+        "whatsapp_download_media",
+        { media_id_expr: "media_id", min_role_read: "40", file_field: "attachment" },
+        { id: 3, media_id: "m-77" },
+        { table },
+      );
+      assert.deepEqual(created, [
+        { name: "whatsapp-m-77.pdf", mimetype: "application/pdf", content: "MEDIA BYTES", user_id: 1, min_role_read: 40 },
+      ]);
+      // the download URL needs the token too
+      assert.equal(fake.calls.find((c) => c.path === "download").headers.Authorization, "Bearer tok");
+      assert.deepEqual(updates, [{ patch: { attachment: "/files/whatsapp-m-77.pdf" }, id: 3 }]);
+      assert.equal(res.notify, "Saved whatsapp-m-77.pdf");
+    });
+  } finally {
+    File.from_contents = real;
+  }
+});
+
+test("download_media uses the given file name", async () => {
+  const File = require("@saltcorn/data/models/file");
+  const real = File.from_contents;
+  File.from_contents = async (name) => ({ path_to_serve: `/files/${name}` });
+  try {
+    await withGraph({}, async () => {
+      const res = await run(
+        "whatsapp_download_media",
+        { media_id_expr: "'m-1'", filename_expr: "'invoice.pdf'", result_variable: "f" },
+      );
+      assert.deepEqual(res, { f: { path: "/files/invoice.pdf", filename: "invoice.pdf", mimetype: "image/jpeg" } });
+    });
+  } finally {
+    File.from_contents = real;
+  }
+});
+
+test("file extensions come from the MIME type", () => {
+  const { extensionFor } = actions._internal;
+  assert.equal(extensionFor("image/jpeg"), "jpg");
+  assert.equal(extensionFor("audio/ogg; codecs=opus"), "ogg");
+  assert.equal(extensionFor("application/pdf"), "pdf");
+  assert.equal(extensionFor(""), "bin");
 });
